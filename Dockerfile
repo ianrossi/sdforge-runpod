@@ -10,8 +10,9 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git git-lfs libgl1 libglib2.0-0 \
         libsm6 libxext6 libxrender-dev wget aria2 ffmpeg \
-        google-perftools \
+        google-perftools openssh-server \
     && git lfs install \
+    && mkdir -p /var/run/sshd \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ── SD Forge WebUI ───────────────────────────────────────────────────────────

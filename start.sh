@@ -65,7 +65,7 @@ python main.py \
     --listen 0.0.0.0 \
     --port "$COMFYUI_PORT" \
     --preview-method auto \
-    > "$LOGS_DIR/comfyui.log" 2>&1 &
+    2>&1 | tee "$LOGS_DIR/comfyui.log" &
 COMFY_PID=$!
 
 # ── 5. Start Forge ───────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ python launch.py \
     --enable-insecure-extension-access \
     --api \
     --no-half-vae \
-    > "$LOGS_DIR/forge.log" 2>&1 &
+    2>&1 | tee "$LOGS_DIR/forge.log" &
 FORGE_PID=$!
 
 # ── 6. Banner ─────────────────────────────────────────────────────────────────
