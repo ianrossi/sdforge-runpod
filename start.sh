@@ -6,6 +6,14 @@
 # =============================================================================
 set -euo pipefail
 
+# ── 0. Start SSH (RunPod injects PUBLIC_KEY env var) ────────────────────────
+if [ -n "${PUBLIC_KEY:-}" ]; then
+    mkdir -p ~/.ssh
+    echo "$PUBLIC_KEY" > ~/.ssh/authorized_keys
+    chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
+    /usr/sbin/sshd 2>/dev/null && log "sshd started" || log "sshd failed (non-fatal)"
+fi
+
 NV="/workspace"
 MODELS_DIR="$NV/models"
 OUTPUTS_DIR="$NV/outputs"
@@ -74,7 +82,9 @@ cd /opt/forge
 python launch.py \
     --listen \
     --port "$FORGE_PORT" \
-    --xformers \
+    --attention-pytorch \
+    --cuda-malloc \
+    --cuda-stream \
     --enable-insecure-extension-access \
     --api \
     --no-half-vae \
