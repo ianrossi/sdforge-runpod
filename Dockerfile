@@ -8,7 +8,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # ── System deps ──────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git git-lfs libgl1-mesa-glx libglib2.0-0 \
+        git git-lfs libgl1 libglib2.0-0 \
         libsm6 libxext6 libxrender-dev wget aria2 ffmpeg \
         google-perftools \
     && git lfs install \
