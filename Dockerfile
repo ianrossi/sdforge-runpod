@@ -10,9 +10,8 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git git-lfs libgl1 libglib2.0-0 \
         libsm6 libxext6 libxrender-dev wget aria2 ffmpeg \
-        google-perftools openssh-server \
+        google-perftools \
     && git lfs install \
-    && mkdir -p /var/run/sshd \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ── SD Forge WebUI ───────────────────────────────────────────────────────────
@@ -42,6 +41,11 @@ RUN git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git \
 RUN rm -rf models/checkpoints models/loras models/vae models/clip \
            models/controlnet models/upscale_models models/embeddings \
            models/diffusion_models models/text_encoders output
+
+# ── SSH (late layer to preserve cache) ────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-server \
+    && mkdir -p /var/run/sshd \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ── Startup script ───────────────────────────────────────────────────────────
 COPY start.sh /opt/start.sh
