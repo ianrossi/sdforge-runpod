@@ -1,12 +1,24 @@
 #!/bin/bash
 # =============================================================================
-# Lightweight startup — everything is pre-installed in the image.
-# Only creates NV dirs, symlinks models, and launches services.
-# Typical boot: ~15-30 seconds.
+# Thin-image startup — apps + Python packages live on the network volume.
+#
+# First boot  (~3 min): clone repos, create venv, pip install
+# Warm boot   (~30 s) : activate cached venv, symlink models, launch
 # =============================================================================
 set -euo pipefail
 
-# ── 0. Start SSH (RunPod injects PUBLIC_KEY env var) ────────────────────────
+NV="/workspace"
+COMFYUI_DIR="$NV/comfyui"
+VENV_DIR="$NV/venv"
+MODELS_DIR="$NV/models"
+OUTPUTS_DIR="$NV/outputs"
+LOGS_DIR="$NV/logs"
+COMFYUI_PORT="${COMFYUI_PORT:-8188}"
+STAMP="$NV/.setup-complete"
+
+log() { echo "[$(date '+%H:%M:%S')] $*"; }
+
+# ── 0. SSH (RunPod injects PUBLIC_KEY) ──────────────────────────────────────
 if [ -n "${PUBLIC_KEY:-}" ]; then
     mkdir -p ~/.ssh
     echo "$PUBLIC_KEY" > ~/.ssh/authorized_keys
@@ -14,41 +26,66 @@ if [ -n "${PUBLIC_KEY:-}" ]; then
     /usr/sbin/sshd 2>/dev/null && log "sshd started" || log "sshd failed (non-fatal)"
 fi
 
-NV="/workspace"
-MODELS_DIR="$NV/models"
-OUTPUTS_DIR="$NV/outputs"
-LOGS_DIR="$NV/logs"
+# ── 1. First-boot setup (installs to network volume) ───────────────────────
+if [ ! -f "$STAMP" ]; then
+    log "=== FIRST BOOT — installing to network volume ==="
 
-FORGE_PORT="${FORGE_PORT:-7860}"
-COMFYUI_PORT="${COMFYUI_PORT:-8188}"
+    # Create directory structure
+    mkdir -p "$MODELS_DIR"/{checkpoints,loras,vae,clip,controlnet,upscalers,embeddings}
+    mkdir -p "$MODELS_DIR"/{diffusion_models,text_encoders}
+    mkdir -p "$OUTPUTS_DIR"/comfyui
+    mkdir -p "$LOGS_DIR"
 
-log() { echo "[$(date '+%H:%M:%S')] $*"; }
+    # Clone ComfyUI
+    if [ ! -d "$COMFYUI_DIR" ]; then
+        log "Cloning ComfyUI..."
+        git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git "$COMFYUI_DIR"
+    else
+        log "ComfyUI already cloned, pulling latest..."
+        cd "$COMFYUI_DIR" && git pull --ff-only 2>/dev/null || true
+    fi
 
-# ── 1. Create NV directories (idempotent) ────────────────────────────────────
-log "Preparing network volume directories..."
+    # Clone ComfyUI-Manager
+    MANAGER_DIR="$COMFYUI_DIR/custom_nodes/ComfyUI-Manager"
+    if [ ! -d "$MANAGER_DIR" ]; then
+        log "Cloning ComfyUI-Manager..."
+        git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git "$MANAGER_DIR"
+    fi
+
+    # Create venv with --system-site-packages to inherit PyTorch + CUDA from base
+    if [ ! -d "$VENV_DIR" ]; then
+        log "Creating venv (inherits PyTorch from base image)..."
+        python -m venv "$VENV_DIR" --system-site-packages
+    fi
+
+    # Install ComfyUI deps (only ones not already in the base image)
+    log "Installing ComfyUI requirements..."
+    "$VENV_DIR/bin/pip" install --no-cache-dir -r "$COMFYUI_DIR/requirements.txt" 2>&1 | tail -5
+
+    # Install Manager deps
+    if [ -f "$MANAGER_DIR/requirements.txt" ]; then
+        log "Installing ComfyUI-Manager requirements..."
+        "$VENV_DIR/bin/pip" install --no-cache-dir -r "$MANAGER_DIR/requirements.txt" 2>&1 | tail -5 || true
+    fi
+
+    touch "$STAMP"
+    log "=== First-boot setup complete ==="
+else
+    log "Warm boot — using cached venv at $VENV_DIR"
+    # Quick update check (non-blocking, best-effort)
+    if [ -d "$COMFYUI_DIR/.git" ]; then
+        cd "$COMFYUI_DIR" && git pull --ff-only 2>/dev/null || true
+    fi
+fi
+
+# ── 2. Ensure model + output directories exist ─────────────────────────────
 mkdir -p "$MODELS_DIR"/{checkpoints,loras,vae,clip,controlnet,upscalers,embeddings}
 mkdir -p "$MODELS_DIR"/{diffusion_models,text_encoders}
-mkdir -p "$OUTPUTS_DIR"/{forge,comfyui}
+mkdir -p "$OUTPUTS_DIR"/comfyui
 mkdir -p "$LOGS_DIR"
 
-# ── 2. Symlink Forge model dirs → NV ─────────────────────────────────────────
-log "Linking Forge model directories..."
-declare -A FORGE_MAP=(
-    ["Stable-diffusion"]="checkpoints"
-    ["Lora"]="loras"
-    ["VAE"]="vae"
-    ["ControlNet"]="controlnet"
-    ["ESRGAN"]="upscalers"
-)
-for forge_name in "${!FORGE_MAP[@]}"; do
-    mkdir -p /opt/forge/models
-    ln -sfn "$MODELS_DIR/${FORGE_MAP[$forge_name]}" "/opt/forge/models/$forge_name"
-done
-ln -sfn "$MODELS_DIR/embeddings" /opt/forge/embeddings
-ln -sfn "$OUTPUTS_DIR/forge"     /opt/forge/outputs
-
-# ── 3. Symlink ComfyUI model dirs → NV ───────────────────────────────────────
-log "Linking ComfyUI model directories..."
+# ── 3. Symlink ComfyUI model dirs → network volume ─────────────────────────
+log "Linking model directories..."
 declare -A COMFY_MAP=(
     ["checkpoints"]="checkpoints"
     ["loras"]="loras"
@@ -61,56 +98,21 @@ declare -A COMFY_MAP=(
     ["text_encoders"]="text_encoders"
 )
 for comfy_name in "${!COMFY_MAP[@]}"; do
-    mkdir -p /opt/comfyui/models
-    ln -sfn "$MODELS_DIR/${COMFY_MAP[$comfy_name]}" "/opt/comfyui/models/$comfy_name"
+    rm -rf "$COMFYUI_DIR/models/$comfy_name"
+    ln -sfn "$MODELS_DIR/${COMFY_MAP[$comfy_name]}" "$COMFYUI_DIR/models/$comfy_name"
 done
-ln -sfn "$OUTPUTS_DIR/comfyui" /opt/comfyui/output
+rm -rf "$COMFYUI_DIR/output"
+ln -sfn "$OUTPUTS_DIR/comfyui" "$COMFYUI_DIR/output"
 
-# ── 4. Start ComfyUI ─────────────────────────────────────────────────────────
+# ── 4. Launch ComfyUI ──────────────────────────────────────────────────────
 log "Starting ComfyUI on :$COMFYUI_PORT ..."
-cd /opt/comfyui
-python main.py \
+log "  Models:  $MODELS_DIR/"
+log "  Outputs: $OUTPUTS_DIR/comfyui/"
+log "  Venv:    $VENV_DIR/"
+
+cd "$COMFYUI_DIR"
+exec "$VENV_DIR/bin/python" main.py \
     --listen 0.0.0.0 \
     --port "$COMFYUI_PORT" \
     --preview-method auto \
-    2>&1 | tee "$LOGS_DIR/comfyui.log" &
-COMFY_PID=$!
-
-# ── 5. Start Forge ───────────────────────────────────────────────────────────
-log "Starting Forge on :$FORGE_PORT ..."
-cd /opt/forge
-python launch.py \
-    --listen \
-    --port "$FORGE_PORT" \
-    --attention-pytorch \
-    --cuda-malloc \
-    --cuda-stream \
-    --enable-insecure-extension-access \
-    --api \
-    --no-half-vae \
-    2>&1 | tee "$LOGS_DIR/forge.log" &
-FORGE_PID=$!
-
-# ── 6. Banner ─────────────────────────────────────────────────────────────────
-log "============================================="
-log "  Forge   → http://0.0.0.0:$FORGE_PORT"
-log "  ComfyUI → http://0.0.0.0:$COMFYUI_PORT"
-log "============================================="
-log "Shared models: $MODELS_DIR/"
-log "  checkpoints/       — Pony, SDXL checkpoints"
-log "  loras/             — LoRA files"
-log "  diffusion_models/  — WAN 2.2 UNet, etc."
-log "  text_encoders/     — CLIP / T5 for WAN 2.2"
-log "============================================="
-
-# ── 7. Keep alive + health monitor ───────────────────────────────────────────
-while true; do
-    for name_pid in "Forge:$FORGE_PID" "ComfyUI:$COMFY_PID"; do
-        svc="${name_pid%%:*}"
-        pid="${name_pid##*:}"
-        if ! kill -0 "$pid" 2>/dev/null; then
-            log "WARNING: $svc (PID $pid) died — check $LOGS_DIR/"
-        fi
-    done
-    sleep 30
-done
+    2>&1 | tee "$LOGS_DIR/comfyui.log"
